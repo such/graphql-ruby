@@ -237,15 +237,18 @@ module GraphQL
         if extensions.any?
           self.extensions(extensions)
         end
-        # This should run before connection extension,
-        # but should it run after the definition block?
-        if scoped?
-          self.extension(ScopeExtension)
-        end
-        # The problem with putting this after the definition_block
-        # is that it would override arguments
-        if connection?
-          self.extension(ConnectionExtension)
+
+        if !(@resolve || @function)
+          # This should run before connection extension,
+          # but should it run after the definition block?
+          if scoped?
+            self.extension(ScopeExtension)
+          end
+          # The problem with putting this after the definition_block
+          # is that it would override arguments
+          if connection?
+            self.extension(ConnectionExtension)
+          end
         end
 
         if definition_block
@@ -281,7 +284,7 @@ module GraphQL
             raise ArgumentError, <<-MSG
 Extensions are not supported with resolve procs or functions,
 but #{owner.name}.#{name} has: #{@resolve || @function}
-So, it can't have extensions: #{extensions}.
+So, it can't have extensions: #{new_extensions}.
 Use a method or a Schema::Resolver instead.
 MSG
           end
@@ -457,7 +460,8 @@ MSG
             # Then if it passed, resolve the field
             if @resolve_proc
               # Might be nil, still want to call the func in that case
-              @resolve_proc.call(inner_obj, args, ctx)
+              v = @resolve_proc.call(inner_obj, args, ctx)
+              legacy_apply_scope(v, ctx)
             else
               public_send_field(after_obj, args, ctx)
             end
@@ -596,7 +600,7 @@ MSG
             extended_obj = @resolver_class.new(object: extended_obj, context: query_ctx)
           end
 
-          if extended_obj.respond_to?(@resolver_method)
+          v = if extended_obj.respond_to?(@resolver_method)
             if extended_args.any?
               extended_obj.public_send(@resolver_method, **extended_args)
             else
@@ -605,6 +609,7 @@ MSG
           else
             resolve_field_method(extended_obj, extended_args, query_ctx)
           end
+          legacy_apply_scope(v, query_ctx)
         end
       end
 
@@ -644,6 +649,17 @@ MSG
           end
         else
           yield(obj, args)
+        end
+      end
+
+      # The Intepreter uses Extensions for this, but this is here for the previous runtime.
+      def legacy_apply_scope(value, ctx)
+        if scoped? && (ret_type = @type.unwrap).respond_to?(:scope_items)
+          ctx.schema.after_lazy(value) do |inner_value|
+            ret_type.scope_items(inner_value, ctx)
+          end
+        else
+          value
         end
       end
     end
